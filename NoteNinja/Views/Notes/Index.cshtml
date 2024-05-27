@@ -1,0 +1,244 @@
+@using System.Security.Claims
+@model IEnumerable<NoteNinja.Models.Note>
+
+@{
+    ViewData["Title"] = "My Notes";
+}
+
+
+<div class="sidebar">
+    <h2>My Notes</h2>
+    <ul id="notes-list">
+        @foreach (var note in Model)
+        {
+            <li class="list-group-item">
+                <a href="#" class="note-link" data-id="@note.Id" data-title="@note.Title" data-tag-id="@note.TagId">@note.Title</a>
+            </li>
+        }
+    </ul>
+    <button id="create-note-button" class="btn btn-secondary mt-3 create-button">+ Add New Note</button>
+</div>
+<div class="main-content">
+    <div class="form-group">
+        <input type="text" id="note-title" class="form-control note-title-input" placeholder="Enter note title" />
+    </div>
+    <div id="editor-container" style="height: 400px;"></div>
+    <button id="save-button" class="btn btn-primary mt-3 save-button">Save</button>
+    <button id="delete-button" class="btn btn-danger mt-3 delete-button" style="display: none;">Delete</button>
+    <div id="save-message" style="display: none; color: green; margin-top: 10px;">Saved!</div>
+</div>
+
+<!-- Hidden input for anti-forgery token -->
+<form id="anti-forgery-form">
+    @Html.AntiForgeryToken()
+</form>
+
+<!-- Hidden input for user ID -->
+<input type="hidden" id="user-id" value="@User.FindFirstValue(ClaimTypes.NameIdentifier)" />
+
+@section Scripts {
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            var quill = new Quill('#editor-container', {
+                theme: 'snow'
+            });
+
+            var currentNoteId = null;
+            var currentTagId = null;
+            var deleteConfirmation = false;
+
+            function updateButtons() {
+                if (currentNoteId) {
+                    document.getElementById('save-button').textContent = 'Save';
+                    document.getElementById('delete-button').style.display = 'inline-block';
+                    document.getElementById('create-note-button').style.display = 'inline-block';
+                } else {
+                    document.getElementById('save-button').textContent = 'Create';
+                    document.getElementById('delete-button').style.display = 'none';
+                    document.getElementById('create-note-button').style.display = 'none';
+                }
+            }
+
+            function highlightSelectedNote() {
+                document.querySelectorAll('.note-link').forEach(link => {
+                    if (link.getAttribute('data-id') === currentNoteId) {
+                        link.parentElement.classList.add('selected-note');
+                    } else {
+                        link.parentElement.classList.remove('selected-note');
+                    }
+                });
+            }
+
+            function showSaveMessage() {
+                var saveMessage = document.getElementById('save-message');
+                saveMessage.style.display = 'block';
+                setTimeout(function() {
+                    saveMessage.style.display = 'none';
+                }, 1000);
+            }
+
+            document.querySelectorAll('.note-link').forEach(link => {
+                link.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    currentNoteId = this.getAttribute('data-id');
+                    currentTagId = this.getAttribute('data-tag-id');
+                    fetch('/Notes/GetNoteContent/' + currentNoteId)
+                        .then(response => {
+                            if (!response.ok) {
+                                throw new Error('Network response was not ok.');
+                            }
+                            return response.json();
+                        })
+                        .then(data => {
+                            document.getElementById('note-title').value = data.title;
+                            quill.root.innerHTML = data.content;
+                            updateButtons();
+                            highlightSelectedNote();
+                        })
+                        .catch(error => {
+                            console.error('There was a problem with the fetch operation:', error);
+                        });
+                });
+            });
+
+            document.getElementById('create-note-button').addEventListener('click', function () {
+                currentNoteId = null;
+                currentTagId = 'default';
+                document.getElementById('note-title').value = '';
+                quill.root.innerHTML = '';
+                updateButtons();
+                highlightSelectedNote();
+            });
+
+            document.getElementById('save-button').addEventListener('click', function () {
+                var title = document.getElementById('note-title').value;
+                var content = quill.root.innerHTML;
+                var token = document.querySelector('input[name="__RequestVerificationToken"]').value;
+                var userId = document.getElementById('user-id').value;
+
+                if (currentNoteId) {
+                    fetch('/Notes/SaveNote', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'RequestVerificationToken': token
+                        },
+                        body: JSON.stringify({ id: currentNoteId, title: title, content: content, tagId: currentTagId, userId: userId })
+                    }).then(response => {
+                        if (response.ok) {
+                            var noteLink = document.querySelector(`.note-link[data-id="${currentNoteId}"]`);
+                            if (noteLink) {
+                                noteLink.textContent = title;
+                            }
+                            showSaveMessage();
+                        } else {
+                            response.text().then(text => alert('Error saving note: ' + text));
+                        }
+                    }).catch(error => {
+                        alert('Error saving note: ' + error);
+                    });
+                } else {
+                    var formData = new FormData();
+                    formData.append('title', title);
+                    formData.append('content', content);
+                    formData.append('tagId', currentTagId);
+                    formData.append('userId', userId);
+                    formData.append('__RequestVerificationToken', token);
+
+                    fetch('/Notes/CreateNote', {
+                        method: 'POST',
+                        body: formData
+                    }).then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok.');
+                        }
+                        return response.json();
+                    }).then(note => {
+                        var noteItem = `<li class="list-group-item"><a href="#" class="note-link" data-id="${note.id}" data-title="${note.title}" data-tag-id="${note.tagId}">${note.title}</a></li>`;
+                        document.getElementById('notes-list').insertAdjacentHTML('beforeend', noteItem);
+                        document.getElementById('note-title').value = note.title;
+                        quill.root.innerHTML = note.content;
+                        currentNoteId = note.id;
+                        currentTagId = note.tagId;
+                        updateButtons();
+                        highlightSelectedNote();
+                        location.reload();
+
+                        document.querySelector(`.note-link[data-id="${note.id}"]`).addEventListener('click', function (e) {
+                            e.preventDefault();
+                            currentNoteId = this.getAttribute('data-id');
+                            currentTagId = this.getAttribute('data-tag-id');
+                            fetch('/Notes/GetNoteContent/' + currentNoteId)
+                                .then(response => {
+                                    if (!response.ok) {
+                                        throw new Error('Network response was not ok.');
+                                    }
+                                    return response.json();
+                                })
+                                .then(data => {
+                                    document.getElementById('note-title').value = data.title;
+                                    quill.root.innerHTML = data.content;
+                                    updateButtons();
+                                    highlightSelectedNote();
+                                })
+                                .catch(error => {
+                                    console.error('There was a problem with the fetch operation:', error);
+                                });
+                        });
+
+                        showSaveMessage();
+                    }).catch(error => {
+                        alert('Error creating note: ' + error);
+                    });
+                }
+            });
+
+            document.getElementById('delete-button').addEventListener('click', function () {
+                if (deleteConfirmation) {
+                    var token = document.querySelector('input[name="__RequestVerificationToken"]').value;
+                    fetch('/Notes/DeleteNote/' + currentNoteId, {
+                        method: 'POST',
+                        headers: {
+                            'RequestVerificationToken': token
+                        }
+                    }).then(response => {
+                        if (response.ok) {
+                            var noteLink = document.querySelector(`.note-link[data-id="${currentNoteId}"]`);
+                            if (noteLink) {
+                                noteLink.parentElement.remove();
+                            }
+                            document.getElementById('note-title').value = '';
+                            quill.root.innerHTML = '';
+                            currentNoteId = null;
+                            currentTagId = null;
+                            updateButtons();
+                            highlightSelectedNote();
+                            deleteConfirmation = false;
+                            alert('Note deleted successfully');
+                        } else {
+                            response.text().then(text => alert('Error deleting note: ' + text));
+                        }
+                    }).catch(error => {
+                        alert('Error deleting note: ' + error);
+                    });
+                } else {
+                    document.getElementById('delete-button').textContent = 'Are you sure you want to delete?';
+                    deleteConfirmation = true;
+
+                    document.addEventListener('click', undoDeleteConfirmation);
+                }
+            });
+
+            function undoDeleteConfirmation(event) {
+                if (!event.target.matches('#delete-button')) {
+                    document.getElementById('delete-button').textContent = 'Delete';
+                    deleteConfirmation = false;
+                    document.removeEventListener('click', undoDeleteConfirmation);
+                }
+            }
+
+            updateButtons();
+            highlightSelectedNote();
+        });
+    </script>
+}
